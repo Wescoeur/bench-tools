@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+
+FILE_SIZE=20G
+IODEPTH=256
+RAMP_TIME=4
+
+RW_COUNT=3
+IOPING_REQ_COUNT=10
+
+# ==============================================================================
+
+WRITE_CMD="fio --randrepeat=1 --ioengine=libaio --direct=1 --gtod_reduce=1 --name=test --filename=test --bs=4M --iodepth=$IODEPTH --size=$FILE_SIZE --readwrite=write --ramp_time=$RAMP_TIME"
+READ_CMD="fio --randrepeat=1 --ioengine=libaio --direct=1 --gtod_reduce=1 --name=test --filename=test --bs=4M --iodepth=$IODEPTH --size=$FILE_SIZE --readwrite=read --ramp_time=$RAMP_TIME"
+
+RANDWRITE_CMD="fio --randrepeat=1 --ioengine=libaio --direct=1 --gtod_reduce=1 --name=test --filename=test --bs=4k --iodepth=$IODEPTH --size=$FILE_SIZE --readwrite=randwrite"
+RANDREAD_CMD="fio --randrepeat=1 --ioengine=libaio --direct=1 --gtod_reduce=1 --name=test --filename=test --bs=4k --iodepth=$IODEPTH --size=$FILE_SIZE --readwrite=randread"
+
+IOPING_CMD="ioping . -c $IOPING_REQ_COUNT"
+
+# ==============================================================================
+
+[ $# -eq 0 ] && { echo "Usage: $0 bench_name"; exit 1; }
+
+# Title.
+echo "## $1"
+
+# Initialize blocks.
+printf "\n__Initialize blocks__ $WRITE_CMD\n"
+eval "$WRITE_CMD > /dev/null"
+
+# Exec WR commands.
+function exec_rw_cmd {
+  for i in $(eval echo {1..$RW_COUNT}); do
+    echo "  - Req $i: $(eval "$1 | grep -E '(read|write)[ ]*:'")"
+  done
+}
+
+printf "\n__Sequential Write__ $WRITE_CMD\n"
+exec_rw_cmd "$WRITE_CMD"
+
+printf "\n__Sequential Read__ $READ_CMD\n"
+exec_rw_cmd "$READ_CMD"
+
+printf "\n__Random Write__ $RANDWRITE_CMD\n"
+exec_rw_cmd "$RANDWRITE_CMD"
+
+printf "\n__Random Read__ $RANDREAD_CMD\n"
+exec_rw_cmd "$RANDREAD_CMD"
+
+# Exec ioping.
+printf "\n__Ioping__ $IOPING_CMD\n"
+eval $IOPING_CMD

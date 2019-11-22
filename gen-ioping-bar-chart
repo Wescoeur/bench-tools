@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+
+function usage {
+  echo "Usage: $0 output_name file1 [file2, file3, ...]"
+  exit 1
+}
+
+function dehumanise_time {
+  for arg in "${@:-$(</dev/stdin)}"
+  do
+    for value in $arg
+    do
+      echo $value
+      awk \
+        'BEGIN{IGNORECASE = 1}
+        function printpower(n,p) {printf "%f\n", n*10^p; next}
+        /[0-9]$/{print $1;next};
+        /ms$/{printpower($1, -3)};
+        /us$/{printpower($1, -6)};
+        /ns$/{printpower($1, -9)}' <<< $value
+    done
+  done
+}
+
+# ==============================================================================
+
+[ $# -lt 2 ] && { usage; }
+output_name=$1
+
+chart_file=$(mktemp)
+data_file=$(mktemp)
+
+function finish {
+  rm -f $chart_file
+  rm -f $data_file
+}
+
+trap finish EXIT
+
+function get_legend {
+  legend=$(head -n 1 $1)
+  legend=${legend:3}
+  sed 's/"/\\"/' <<< $legend
+}
+
+for arg in "${@:2}"; do
+  printf "\"$(get_legend $arg)\"" >> $data_file
+  result=$(sed -n 's/^min\/avg\/max\/mdev\([^/]\+\)\/[^0-9]\+\([^a-z ]\+\)[ ]*\([a-z]\+\)\(.*\)/\2\3/p' $arg | dehumanise_time)
+  echo $result >> $data_file
+done
+
+cat > $chart_file << EOL
+set terminal png
+set output '$output_name'
+
+skyblue = "#004586";
+
+set style data histogram
+set style histogram cluster gap 1
+set style fill solid
+set boxwidth 0.9
+set xtics border in scale 0,0 nomirror rotate by 30 right offset 1,0
+set grid ytics
+set yrange [0:]
+set format y '%.0s%c'
+set title "Bench (Ioping)"
+plot "$data_file" using 2:xtic(1) title "Ioping (AVG)" linecolor rgb skyblue
+EOL
+
+gnuplot $chart_file

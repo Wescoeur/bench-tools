@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+
+# ==============================================================================
+
+function usage {
+  echo "Usage: $0 type iops|bandwidth output_name file1 [file2, file3, ...]"
+  exit 1
+}
+
+function dehumanise_bytes {
+  for arg in "${@:-$(</dev/stdin)}"
+  do
+    for value in $arg
+    do
+      awk \
+        'BEGIN{IGNORECASE = 1}
+        function printpower(n,b,p) {printf "%u\n", n*b^p; next}
+        /[0-9]$/{print $1;next};
+        /K(iB)?$/{printpower($1,  2, 10)};
+        /M(iB)?$/{printpower($1,  2, 20)};
+        /G(iB)?$/{printpower($1,  2, 30)};
+        /T(iB)?$/{printpower($1,  2, 40)};
+        /KB$/{    printpower($1, 10,  3)};
+        /MB$/{    printpower($1, 10,  6)};
+        /GB$/{    printpower($1, 10,  9)};
+        /TB$/{    printpower($1, 10, 12)}' <<< $value
+    done
+  done
+}
+
+# ==============================================================================
+
+[ $# -lt 4 ] && { usage; }
+type=$1
+result_type=$2
+output_name=$3
+
+if [ "$type" != "sequential" ] && [ "$type" != "random" ]; then
+  echo "Invalid type."
+  usage
+fi
+
+chart_legend_prefix=$type
+
+if [ "$result_type" == "iops" ]; then
+  result_getter_cmd='sed "s/^\(.*\)iops=\(.*\),\(.*\)$/\2/gI"'
+  chart_legend_prefix="IOPS $chart_legend_prefix"
+elif [ "$result_type" == "bandwidth" ]; then
+  result_getter_cmd='sed "s/^\(.*\)bw=\([^\/]*\)\/s.*/\2/gI"'
+  chart_legend_prefix="Bandwidth (per s) $chart_legend_prefix"
+else
+  echo "Invalid result_type."
+  usage
+fi
+
+chart_file=$(mktemp)
+data_file=$(mktemp)
+
+function finish {
+  rm -f $chart_file
+  rm -f $data_file
+}
+
+trap finish EXIT
+
+function get_legend {
+  legend=$(head -n 1 $1)
+  legend=${legend:3}
+  sed 's/"/\\"/' <<< $legend
+}
+
+for arg in "${@:4}"; do
+  printf "\"$(get_legend $arg)\"" >> $data_file
+
+  req_count=$(grep "^  - Req" "$arg" | wc -l)
+  req_count=$(($req_count / 4)) # 4 = seq W/R + rand W/R
+
+  for subtype in Read Write; do
+    result=$(eval "grep -i -A$req_count -P '^__${type} ${subtype}__' '$arg'")
+    result=$(tail -n +2 <<< "$result" | eval $result_getter_cmd | dehumanise_bytes | sed -e ':a;N;$!ba;s/\n/+/g')
+    result=$(bc <<< "($result)/$req_count")
+    printf " $result" >> $data_file
+  done
+
+  echo "" >> $data_file
+done
+
+cat > $chart_file << EOL
+set terminal png
+set output '$output_name'
+
+red = "#FF0000"; skyblue = "#87CEEB";
+
+set style data histogram
+set style histogram cluster gap 1
+set style fill solid
+set boxwidth 0.9
+set xtics border in scale 0,0 nomirror rotate by 30 right offset 1,0
+set grid ytics
+set yrange [0:]
+set format y '%.1s%c'
+set title "Bench (Read/Write)"
+plot "$data_file" using 2:xtic(1) title "$chart_legend_prefix Read" linecolor rgb skyblue, \
+               '' using 3 title "$chart_legend_prefix Write" linecolor rgb red
+EOL
+
+gnuplot $chart_file
